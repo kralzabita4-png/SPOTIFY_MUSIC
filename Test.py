@@ -1,7 +1,7 @@
 import os, re, io, time, json, asyncio, random, aiohttp
 from urllib.parse import quote_plus
 from pymongo import MongoClient
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import RPCError, Forbidden
 from youtubesearchpython.__future__ import VideosSearch
@@ -17,7 +17,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "7062994457:AAHL5LHDdY1MedP2-mtYMT1UEYeDk94Ka
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://vivek:1234567890@cluster0.c48d8ih.mongodb.net/?retryWrites=true&w=majority")
 API_BASE = os.getenv("API_BASE", "http://46.250.243.52:1470").rstrip("/") if os.getenv("API_BASE") else ""
 OWNER_ID = int(os.getenv("OWNER_ID", "6657539971"))
-DURATION_LIMIT = 7200  # 2 hours
+DURATION_LIMIT = 7200
 
 os.makedirs("downloads", exist_ok=True)
 
@@ -33,7 +33,6 @@ col = db["queues"]
 print("🛠 Debug: Clients initialized")
 
 # ---------------- HELPERS ----------------
-
 def sec_to_time(sec):
     m, s = divmod(int(sec), 60)
     return f"{m:02d}:{s:02d}"
@@ -95,20 +94,21 @@ async def play_next(cid):
     if not data["queue"]:
         try:
             await vc.leave_group_call(cid)
-            print(f"🛠 Debug: Left group call as queue empty")
+            print("🛠 Debug: Left group call as queue empty")
         except (RPCError, Forbidden):
             pass
         data["now"] = None
         save_queue(data)
         return
+
     song = data["queue"].pop(0)
     save_queue(data)
     title, link, thumb, dur = song["title"], song["link"], song["thumb"], song["dur"]
     req, req_id = song["req"], song.get("req_id")
+
     await join_and_stream(cid, link)
     asyncio.create_task(background_download_tme(link, f"downloads/{int(time.time())}_{random.randint(100,999)}.mp3"))
-    comp = await make_thumb(thumb, req_id) if 'make_thumb' in globals() else None
-    photo = comp or thumb or "https://i.ibb.co/4pDNDk1/music.jpg"
+    photo = thumb or "https://i.ibb.co/4pDNDk1/music.jpg"
     msg = await bot.send_photo(
         cid,
         photo=photo,
@@ -118,6 +118,7 @@ async def play_next(cid):
             [InlineKeyboardButton("📜 Queue", callback_data=f"queue_{cid}")]
         ])
     )
+
     data["now"] = {"msg": msg.id, "start": time.time(), "dur": sec(dur)}
     save_queue(data)
     asyncio.create_task(update_progress(cid))
@@ -142,18 +143,17 @@ async def update_progress(cid):
                 n["msg"],
                 caption=f"🎶 Playing… {sec_to_time(el)} / {sec_to_time(dur)}"
             )
-        except RPCError:
-            pass
+        except RPCError: pass
 
 # ---------------- COMMANDS ----------------
 @bot.on_message(filters.command("start"))
 async def start_cmd(_, m: Message):
-    print(f"🛠 Debug: /start command received from {m.from_user.id} in chat {m.chat.id}")
+    print(f"🛠 Debug: /start from {m.from_user.id} in {m.chat.id}")
     await m.reply_text("👋 Hey! Use /play <song name> to stream instantly 🎧")
 
 @bot.on_message(filters.command("play") & filters.group)
 async def play_cmd(_, m: Message):
-    print(f"🛠 Debug: /play command received in chat {m.chat.id} from {m.from_user.id}")
+    print(f"🛠 Debug: /play received in {m.chat.id} from {m.from_user.id}")
     if len(m.command) < 2:
         await m.reply_text("Usage: /play <song name>")
         return
@@ -162,12 +162,11 @@ async def play_cmd(_, m: Message):
     try:
         vidid, title, duration, thumb = await youtube_search(query)
     except Exception as e:
-        print(f"🛠 Debug: YouTube search failed for query: {query}", e)
+        print("Search error:", e)
         await m.reply_text("❌ YouTube search failed.")
         return
     link = await get_api_link(vidid)
     if not link:
-        print(f"🛠 Debug: API did not return link for vidid {vidid}")
         await m.reply_text("❌ API didn’t return a link.")
         return
     data = get_queue(m.chat.id)
@@ -189,7 +188,7 @@ async def play_cmd(_, m: Message):
 @bot.on_callback_query(filters.regex(r"^skip_(\-\d+|\d+)$"))
 async def skip_cb(_, q):
     cid = int(q.data.split("_")[1])
-    print(f"🛠 Debug: Skip callback received for chat {cid}")
+    print(f"🛠 Debug: Skip callback for {cid}")
     try: await vc.leave_group_call(cid)
     except (RPCError, Forbidden): pass
     await play_next(cid)
@@ -198,7 +197,6 @@ async def skip_cb(_, q):
 @bot.on_callback_query(filters.regex(r"^queue_(\-\d+|\d+)$"))
 async def cb_queue(_, q):
     cid = int(q.data.split("_")[1])
-    print(f"🛠 Debug: Queue callback received for chat {cid}")
     d = get_queue(cid)
     ql = d.get("queue", [])
     if not ql:
@@ -209,7 +207,6 @@ async def cb_queue(_, q):
 
 @bot.on_message(filters.command("stop") & filters.group)
 async def stop_cmd(_, m: Message):
-    print(f"🛠 Debug: /stop command received in chat {m.chat.id}")
     try: await vc.leave_group_call(m.chat.id)
     except (RPCError, Forbidden): pass
     d = get_queue(m.chat.id)
@@ -219,29 +216,18 @@ async def stop_cmd(_, m: Message):
     await m.reply_text("⏹ Stopped and cleared queue.")
 
 # ---------------- STARTUP ----------------
-async def main():
-    print("🛠 Debug: Starting Bot and User client...")
+@bot.on_startup()
+async def startup(client):
+    print("🛠 Debug: Starting user and voice client...")
     await user.start()
-    print(f"✅  User (StringSession) started! Username: {(await user.get_me()).username}")
     await vc.start()
-    print("✅  PyTgCalls started successfully")
-    await bot.start()
-    print(f"✅  Bot started! Username: {(await bot.get_me()).username}")
-
+    print("✅ User & PyTgCalls started successfully!")
     if OWNER_ID:
         try:
-            await bot.send_message(OWNER_ID, "🚀 Music Bot started successfully!")
+            await client.send_message(OWNER_ID, "🚀 Music Bot started successfully!")
         except Exception as e:
-            print("🛠 Debug: Failed to send start message to owner:", e)
+            print("🛠 Debug: Cannot DM owner:", e)
 
-    print("🛠 Debug: Entering idle mode, waiting for commands...")
-    await idle()
-
-if __name__ == "__main__":
-    try:
-        import uvloop
-        uvloop.install()
-        print("🛠 Debug: uvloop installed.")
-    except Exception as e:
-        print("🛠 Debug: uvloop install failed or not available:", e)
-    asyncio.run(main())
+# ---------------- RUN BOT ----------------
+print("🚀 Starting bot...")
+bot.run()
